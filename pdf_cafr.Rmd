@@ -1,0 +1,543 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(pdftools)
+library(tabulizer)
+library(stringr)
+library(data.table)
+library(rlist)
+library(pipeR)
+#library(readxl)
+```
+
+
+```{r 'get-cities'}
+
+# Get city names from Reason spreadsheet
+cities <- 
+  readxl::read_excel(
+    "/Users/davidlucey/Desktop/David/Projects/mass_munis/reason.xlsx",
+    sheet = "GSheets Long",
+    range = "B1:B151",
+    col_names = TRUE)
+names(cities) <- cities[1,]
+cities <- cities$Entity[2:150]
+
+# Prepare cities for url paste
+cities_url <- 
+  ifelse(
+    str_detect(cities, "\\w\\s\\w"),
+    paste0(str_extract(cities, "^\\w+"),
+           "%20",
+           str_extract(cities, "\\w+$")),
+    cities)
+
+# Create list of pdfs
+dir <- "/Users/davidlucey/Desktop/David/Projects/mass_munis/data/pdf_cafr/"
+files <- list.files(dir)
+city <- str_remove(files, "_2018.pdf")
+pdfs <- 
+  paste0(dir, city, "_2018.pdf")
+
+```
+
+
+```{r 'get-pdfs', eval=FALSE, include=FALSE}
+
+# Apply download.file to url to download specified pdfs and save in data/pdf_cafr folder
+year <- "2018"
+lapply(cities_url[c(1,10)], function(city) {
+  try(download.file(
+    paste0("https://cafr.file.core.windows.net/cafr/General%20Purpose/2018/MA%20",city,"%202018.pdf?sv=2017-07-29&ss=f&srt=sco&sp=r&se=2120-03-06T21:34:56Z&st=2020-03-06T21:34:56Z&spr=https&sig=lFqyP8wwH1giyaFhjj6lCVuaAZ9xgbSnjEtzEtpusgA%3D",collapse=""),
+    destfile = 
+      paste0(
+        "data/pdf_cafr/",
+        tolower(str_replace(city, "\\%20", "_")),
+        "_", year,
+        ".pdf"),
+    mode = "wb"))})
+
+```
+
+
+```{r 'select-pdfdata'}
+
+pdf_list <- 
+  
+  lapply(pdfs, try(function(pdf){
+    
+    # Keep only 1st 75 pages
+    rpt <- pdf_data(pdf)[1:75]
+    
+    # Name by index for each muni
+    names(rpt) <- 1:length(rpt)
+    
+    rpt <- 
+      rpt[unlist(lapply(rpt, function(page) {
+        # Filter pages with notes to financial statement language
+        ((str_detect(
+          tolower(paste(page$text[page$y %in% tail(unique(page$y), 5)], collapse = " ")), 
+          "notes to basic financial statements|accompanying notes|integral part of these financial statements|notes to the financial statements are an integral part of this statement"
+        ) |
+        # Filter pages with key statemnt names
+           str_detect(
+          tolower(paste(page$text[page$y %in% head(unique(page$y), 5)], collapse = " ")), 
+          "statement of net position|statement of activities|statement of revenues|balance sheet"
+          )
+          ) & 
+        !str_detect(
+        # Then drop pages with these phrases
+          tolower(paste(page$text, collapse = " ")), 
+          "discussion & analysis|contents|discussion and analysis|fiduciary|enterprise|proprietary|reconciliation|combining|comparative|highlights|budget|non(-)major"
+        ))
+      }))]
+    
+    # Convert to dt
+    rpt <- lapply(rpt, setDT)
+    
+  }))
+
+# Name pdf_list by muni
+names(pdf_list) <- tolower(cities)
+
+```
+
+NOT USED
+```{r eval=FALSE, include=FALSE}
+np <- pdf_list %>%
+      list.map(x ~ x[unlist(lapply(x, try(function(page) {
+    text <- paste(page$text[page$y < 200], collapse = " ")
+    any(str_detect(tolower(text), "statement of activities"))
+    })))]) 
+```
+
+NOT USED
+```{r eval=FALSE, include=FALSE}
+  
+test <-
+  pdf_list %>>%
+  # Keep tables with "june" and "2018" at top
+    list.map(x ~ x[unlist(lapply(x, try(function(page) {
+    text <- paste(page$text[page$y < 200], collapse = " ")
+    any(str_detect(tolower(text), "june|2018|continued"))
+    })))]) 
+
+test <- pdf_list%>>%
+   # Keep only chart pages based on digit/letter ratio > 0.2
+    list.map(x ~ x[lapply(x, function(page) {
+    text <- paste(page$text, collapse = " ")
+    d <- str_count(text, "\\d")
+    w <- str_count(text, "[[:alpha:]]")
+    d / w
+  }) > 0.10]) 
+
+pdf_list <-
+  pdf_list %>>%
+  # Keep rows with "governmental", "primary" or "statement" at top
+  list.map(x ~ x[unlist(lapply(x, try(function(page) {
+    
+    # Find top row & filter page$text
+    top_y <- 
+      min(c(page$y[str_detect(page$text, "\\,\\d{3}")], 200))
+    date_y <- 
+      min(c(page$y[str_detect(tolower(page$text), "june")], top_y))
+    top_y <- 
+      ifelse(date_y %between% c(1, 200),
+             date_y,
+             ifelse(top_y %between% c(1, 200), top_y, 200))
+    top <-
+      ifelse(date_y < top_y, date_y, top_y)
+    text <- 
+      tolower(page$text[page$y < top])
+    
+    # Pages to keep
+    keeps <- 
+      c(
+        "(?<!.)governmental(?!.)",
+        "statement",
+        "primary",
+        "continued"
+        )
+    
+    # Regex and filter list
+    keep_pattern <- paste(keeps, collapse = "|")
+    any(str_detect(text, keep_pattern))
+    
+  })))]) 
+
+pdf_list <- 
+  pdf_list %>%
+    # Drop non-governmental
+    list.map(x ~ x[unlist(lapply(x, try(function(page) {
+    
+    # Find top row & filter page$text
+    top_y <- 
+      min(page$y[str_detect(page$text, "\\,\\d{3}")])
+    date_y <- 
+      min(c(page$y[str_detect(tolower(page$text), "june")], top_y))
+    top_y <- 
+      ifelse(date_y %between% c(1, 200),
+             date_y,
+             ifelse(top_y %between% c(1, 200), top_y, 200))
+    top <-
+      ifelse(date_y < top_y, date_y, top_y)
+    text <-
+      tolower(page$text[page$y < top])
+  
+    # Pages to drop
+    drops <- 
+      c(
+        "proprietary",
+        "fiduciary",
+        "supplementary",
+        "tax(es)?",
+        "pension(s)?",
+        "opeb",
+        "benefit",
+        "budget(ary)?",
+        "schedule(s)?",
+        "non-major",
+        "nonmajor",
+        "auditors",
+        "agency",
+        "ten",
+        "internal",
+        "business",
+        "notes",
+        "combining",
+        "comparative",
+        "highlights",
+        "condensed",
+        "management's",
+        "liabilities",
+        "debt"
+    )
+    
+    # Regex and filter list 
+    drop_pattern <- paste(drops, collapse = "|")
+    ! any(str_detect(text, drop_pattern))
+    
+    })))])
+  
+```
+
+
+```{r 'calc-table-area'}
+calc_table_area <- function(dt) {
+  
+  # Top  
+  top <- min(dt$y) - 25
+  
+  # Left
+  left <- min(dt$x) - 25
+  
+  # Right
+  right <- max(dt$x) + 45
+  
+  # Bottom
+  bottom <- max(dt$y) + 25 
+  
+  # Area list
+  a <- c(top, left, bottom, right)
+  
+  # Return
+  a
+}
+```
+
+
+```{r 'get-table-specs'}
+
+specs <- 
+  
+  pdf_list %>>%
+  
+  list.map(x ~ lapply(x, function(page) {
+    
+    # Convert to dt
+    page <- setDT(page)
+    
+    # Get table params and subset pages
+    table_top <-
+      min(page$y[str_detect(page$text, "\\$")])
+    table_bottom <-
+      max(page$y[str_detect(page$text, "\\$")])
+    page <-
+      page[page$y >= table_top &
+             page$y <= table_bottom]
+    
+    # Convert empty pages to null
+    if(nrow(page) == 0) { page <- NULL }
+    
+    # Returns
+    page
+    
+    })) %>>% 
+  
+  # Drop null pages
+  list.map(x ~ x[!sapply(x, function(x) is.null(x))]) %>>%
+  
+  # Apply calc_table_area to each page 
+  list.map(x ~ lapply(x, function(page) {
+    calc_table_area(page)
+   }))
+
+
+```
+
+NOT USED
+```{r}
+    
+test  <- 
+  pdf_list %>>%
+  list.map(x ~ lapply(x, function(page) {
+    page <- setDT(page)
+    y_drops <- 
+      page$y[str_detect(tolower(page$text[page$y < 200]), "june|town|notes|comprehensive|primary|governmental|program\\srevenues")]
+    page <- 
+      page[!page$y %in% y_drops]
+    line_drops <- c("\\.*", "\\–", "	-", "\\$", "	-","")
+    line_pattern <- 
+      paste("(?<!.)", line_drops, "(?!.)", collapse="|", sep="")
+    page <- 
+      page[!str_detect(page$text, line_pattern)]
+    page <- page[!is.null(page$text)]
+    # Remove punctuatuation from remaining pages in text list
+    #page[, text := tm::removePunctuation(text)]
+    page[, text := str_remove(text, "\\W\\……*(?!.)")]
+    page
+    }))
+
+```
+
+
+
+```{r 'get-table'}
+
+table  <- 
+  
+  mapply(function(x, y) {
+    
+    #x <- specs[[1]][1]
+    #y <- "abington"
+    
+    # Params from mapply
+    a <- x
+    page <- as.integer(names(x))
+    city <- gsub(" ", "_", y)
+     
+    # Set up pdf using city
+    #dir <- getwd()
+    pdf <-
+      paste0(
+        dir, 
+        city, 
+        "_2018.pdf")
+    
+    # Loop to apply params in tabulizer
+    l <- mapply(function(a, page, pdf) {
+      
+      # Tabulizer
+      t <- 
+        try(extract_tables(
+          pdf, 
+          pages = page, 
+          area = list(a),
+          guess = F,
+          output = "data.frame"))
+      
+      # Return
+      t
+      
+      }, a, page, pdf)
+    
+    # Loop to clean up and drop unneeded cols
+    l <- lapply(l, function(t) {
+      
+      # Convert to dt
+      t <- setDT(t)
+      
+       # Select $ or all is.na columns and drop
+      drops <- 
+        sapply(t, function(col) which(str_detect(col, "^\\$$") | all(is.na(col))))
+      drops <- 
+        which(sapply(drops, function(col) sum(col) > 0))
+      t[ , (drops) := NULL]
+      
+      # Return dt
+      t
+      
+    })
+    
+    l
+  
+}, specs[1:10], names(specs)[1:10])
+
+```
+
+
+
+
+
+```{r 'calc-header-area'}
+
+calc_header_area <- function(dt) {
+  
+  # Top  
+  top <- min(dt$y) - 15
+  
+  # Left
+  left <- 
+    ifelse( min(dt$x) - 30 > 0,
+            min(dt$x) - 30, 1)
+  
+  # Right
+  right <- max(dt$x) + 45
+  
+  # Bottom
+  bottom <- max(dt$y) + 30
+  
+  # Area list
+  a <- c(top, left, bottom, right)
+  
+  # Return
+  a
+  
+}
+```
+
+
+
+
+
+```{r 'get-header-specs'}
+
+header <- 
+  pdf_list[1:10] %>>%
+  list.map(x ~ lapply(x, function(page) {
+    page <- setDT(page)
+    header_bottom <- 
+      min(page$y[str_detect(page$text, "\\$")])
+    header_top <- 
+      min(page$y[str_detect(page$text, "(?<!.)2018(?!.)")])
+    page <- 
+      page[page$y <= header_bottom & 
+             page$y > header_top]
+    a <- calc_header_area(page)
+    a
+    })) 
+```
+
+
+
+
+```{r 'get-header-table'}
+
+header_table  <- 
+  
+  mapply(function(x, y) {
+    
+    #a <- list(header[["amherst"]][["16"]])
+    #page <- 16
+    #city <- "amherst"
+
+    # Params
+    a <- x
+    page <- as.integer(names(x))
+    city <- gsub(" ", "_", y)
+     
+    # Set up pdf
+    pdf <-
+      paste0(dir, city, "_2018.pdf")
+    
+    # Adj max x if needed
+    #dim <- pdftools::pdf_pagesize(pdf)[page,]
+    #max_x <- ifelse(dim$right > 615, dim$height, dim$right)
+    #a[[1]][4] <- ifelse(a[[1]][4] < max_x, max_x, a[[1]][4])
+    
+    l <- mapply(function(a, page, pdf) {
+      
+      # Tabulizer
+      t <- 
+        try(extract_tables(pdf, 
+                      pages = page, 
+                      area = list(a), 
+                      guess = F,
+                      output = "data.frame"))
+  
+      t
+      
+      }, a, page, pdf)
+    
+    l <- lapply(l, function(t) {
+      
+      # Convert to dt
+      t <- setDT(t)
+      
+       # Select $ or all is.na columns and drop
+      drops <- 
+        sapply(t, function(col) which(str_detect(col, "^\\$$") | all(is.na(col))))
+      drops <- 
+        which(sapply(drops, function(col) sum(col) > 0))
+      t[ , (drops) := NULL]
+      
+      # Return dt
+      t
+      
+    })
+    
+    # Return list for city
+    l
+  
+}, header, names(header))
+
+# Add subscript "a" to header_table municipal index names
+header_table <- sapply(header_table, function(list) {
+    names(list) <- paste(names(list), "a",sep="")
+    list})
+
+```
+
+
+
+
+
+```{r 'get-spreadsheets'}
+
+n <- mapply(c, header_table, table)
+n <- list(header_table, table)
+
+n1 <- 
+  lapply(n[1:5], function(x) {
+    doubles <-
+      names(which(table(str_remove(names(x), "a")) == 2))
+  l <- 
+    lapply(doubles, try(function(double) {
+      subset <-
+        x[str_detect(names(x), double)]
+      new <-
+        try(rbindlist(subset, use.names = FALSE)
+        )
+    }))
+  names(l) <- doubles
+  l
+  })
+
+```
+
+
+
+
+```{r 'save-xlsx'}
+library(xlsx)
+# Save to workbook with each list element as tab
+wb <- createWorkbook()
+abington <- n1[[1]]
+sheetnames <- names(abington)
+sheets <- lapply(sheetnames, createSheet, wb = wb)
+void <- Map(addDataFrame, abington, sheets)
+saveWorkbook(wb, file = "sample_cafr_abington.xlsx")
+```
