@@ -13,6 +13,15 @@ library(pipeR)
 #library(readxl)
 ```
 
+```{r}
+r <- readRDS("mass.RDS")
+specs <- r$specs
+pdf_list <- r$pdf_list
+table <- r$table
+
+rm(r)
+```
+
 
 ```{r 'get-cities'}
 
@@ -68,7 +77,7 @@ lapply(cities_url[c(1,10)], function(city) {
 pdf_list <- 
   
   lapply(pdfs, try(function(pdf){
-    
+
     # Keep only 1st 75 pages
     rpt <- pdf_data(pdf)[1:75]
     
@@ -98,12 +107,21 @@ pdf_list <-
     # Convert to dt
     rpt <- lapply(rpt, setDT)
     
+    names <- as.integer(names(rpt))
+    mean_names <- mean(names)
+    rpt <- rpt[names - mean_names < 10]
+    
+    # Return 
+    rpt
+    
   }))
 
 # Name pdf_list by muni
 names(pdf_list) <- tolower(cities)
 
+
 ```
+
 
 NOT USED
 ```{r eval=FALSE, include=FALSE}
@@ -228,6 +246,11 @@ pdf_list <-
 ```{r 'calc-table-area'}
 calc_table_area <- function(dt) {
   
+  #dt <- pdf_list[["attleboro"]][["22"]]
+  
+  # Get table params
+  # Note this function is applied after filtering header
+  
   # Top  
   top <- min(dt$y) - 25
   
@@ -249,42 +272,67 @@ calc_table_area <- function(dt) {
 ```
 
 
+
 ```{r 'get-table-specs'}
 
 specs <- 
   
-  pdf_list %>>%
+  pdf_list[unlist(lapply(pdf_list, length))>0] %>>%
   
   list.map(x ~ lapply(x, function(page) {
     
     # Convert to dt
     page <- setDT(page)
+
+    # Horizontal
+    x <- 8.5 * 72
+    y <- 11 * 72
+    max_x <- max(page$x)
+    max_y <- max(page$y)
+    orientation <- 
+      ifelse(x < max_x, "horizontal", "verticle")
     
-    # Get table params and subset pages
+    # Top
     table_top <-
-      min(page$y[str_detect(page$text, "\\$")])
+      min(page$y[str_detect(page$text, "2018") & page$space==FALSE])
+    height_top <- unique(page$height[page$y == table_top])
+    top <- table_top + height_top 
+    
     table_bottom <-
-      max(page$y[str_detect(page$text, "\\$")])
-    page <-
-      page[page$y >= table_top &
-             page$y <= table_bottom]
-    
+       max(page$y[str_detect(page$text, "\\$")])
+    height_bottom <- unique(page$height[page$y == table_bottom])
+    bottom <- table_bottom + height_bottom
+  
     # Convert empty pages to null
-    if(nrow(page) == 0) { page <- NULL }
+    if(table_top == max_y | table_bottom == max_x) { page <- NULL }
     
-    # Returns
-    page
+       # Left
+    left <-     
+      ifelse( min(page$x) - 30 > 0,
+              min(page$x) - 30, 1 )
+    
+    # Right
+    width_max_x <- max(page$width[page$x == max_x])
+    right <- 
+    max_x + width_max_x + ifelse(orientation == "verticle", 30, 50)
+    
+    
+    # Area list
+    a <- c(top, left, bottom, right)
+  
+    # Return
+    a
     
     })) %>>% 
   
   # Drop null pages
-  list.map(x ~ x[!sapply(x, function(x) is.null(x))]) %>>%
-  
-  # Apply calc_table_area to each page 
-  list.map(x ~ lapply(x, function(page) {
-    calc_table_area(page)
-   }))
+  list.map(x ~ x[!sapply(x, function(x) is.null(x))]) 
 
+#%>>%
+  # Apply calc_table_area to each page subset
+  #list.map(x ~ lapply(x, function(page) {
+  #  calc_table_area(page)
+  # }))
 
 ```
 
@@ -315,42 +363,45 @@ test  <-
 
 
 
+
 ```{r 'get-table'}
 
 table  <- 
   
   mapply(function(x, y) {
     
-    #x <- specs[[1]][1]
-    #y <- "abington"
+    # Debug - remove later
+    #x <- specs[[7]][2]
+    #y <- "attleboro"
+    # a <- specs[["attleboro"]][["22"]]
     
     # Params from mapply
     a <- x
     page <- as.integer(names(x))
     city <- gsub(" ", "_", y)
+    
+    print(city)
      
     # Set up pdf using city
-    #dir <- getwd()
+    dir <- 
+      "/Users/davidlucey/Desktop/David/Projects/mass_munis/data/pdf_cafr/"
     pdf <-
-      paste0(
-        dir, 
-        city, 
-        "_2018.pdf")
+      paste0(dir, city, "_2018.pdf")
     
     # Loop to apply params in tabulizer
     l <- mapply(function(a, page, pdf) {
       
-      # Tabulizer
-      t <- 
-        try(extract_tables(
-          pdf, 
-          pages = page, 
-          area = list(a),
-          guess = F,
-          output = "data.frame"))
+      print(page)
       
-      # Return
-      t
+      # Tabulizer
+      if(length(a) == 4) {
+        t <- 
+          try(extract_tables(pdf, 
+                      pages = page, 
+                      area = list(a), 
+                      guess = F,
+                      output = "data.frame"))
+      } else { t <- data.frame() }
       
       }, a, page, pdf)
     
@@ -360,12 +411,14 @@ table  <-
       # Convert to dt
       t <- setDT(t)
       
-       # Select $ or all is.na columns and drop
-      drops <- 
-        sapply(t, function(col) which(str_detect(col, "^\\$$") | all(is.na(col))))
-      drops <- 
-        which(sapply(drops, function(col) sum(col) > 0))
-      t[ , (drops) := NULL]
+      # Select $ or all is.na columns and drop
+      if(length(t) > 0) {
+        drops <-
+          sapply(t, function(col) which(any(str_detect(col, "^\\$$")) | all(is.na(col))))
+        drops <- 
+          which(sapply(drops, function(col) sum(col) > 0))
+        t[ , (drops) := NULL] 
+        }
       
       # Return dt
       t
@@ -374,7 +427,7 @@ table  <-
     
     l
   
-}, specs[1:10], names(specs)[1:10])
+}, specs, names(specs))
 
 ```
 
@@ -382,23 +435,30 @@ table  <-
 
 
 
-```{r 'calc-header-area'}
+```{r 'calc-header-area', eval=FALSE, include=FALSE}
+
+# Function to extract header and first few rows of page
+# First few rows are extracted to guide columns
 
 calc_header_area <- function(dt) {
   
   # Top  
-  top <- min(dt$y) - 15
+  top <- min(dt$y)
+  height <- unique(dt$height[dt$y == top])
+  top <- top - height - 1 
   
   # Left
   left <- 
     ifelse( min(dt$x) - 30 > 0,
-            min(dt$x) - 30, 1)
+            min(dt$x) - 30, 1 )
   
   # Right
-  right <- max(dt$x) + 45
+  width_max_x <- dt$width[dt$x == max(dt$x)]
+  max_x <- max(dt$x)
+  right <- max_x + width_max_x + 25
   
   # Bottom
-  bottom <- max(dt$y) + 30
+  bottom <- max(dt$y) + 10
   
   # Area list
   a <- c(top, left, bottom, right)
@@ -410,39 +470,232 @@ calc_header_area <- function(dt) {
 ```
 
 
+```{r eval=FALSE, include=FALSE}
+calc_header_area <- function(dt) {
+  
+  # Top  
+  top <- max(dt$y)
+  
+  # Left
+  left <- 
+    ifelse( min(dt$x) - 30 > 0,
+            min(dt$x) - 30, 1 )
+  
+  # Right
+  width_max_x <- unique(dt$width[dt$x == max(dt$x)])
+  max_x <- max(dt$x)
+  right <- max(max_x + width_max_x + 25)
+  
+  # Bottom
+  bottom <- min(setdiff(unique(dt$y), min(dt$y)))
+  
+  
+  # Area list
+  a <- c(top, left, bottom, right)
+  
+  # Return
+  a
+  
+}
+```
 
 
-
-```{r 'get-header-specs'}
+```{r 'get-header-specs', eval=FALSE, include=FALSE}
 
 header <- 
-  pdf_list[1:10] %>>%
+  
+  pdf_list[unlist(lapply(pdf_list, length))>0] %>>%
+  
   list.map(x ~ lapply(x, function(page) {
+    
+    #page <- pdf_list[[1]]$`16`
+    
+    # Convert data.table
     page <- setDT(page)
+    
+    # Get max y row
+    y_max <- max(page$y)
+    #height_y_max <- unique(page$height[page$y == y_max])
+    x_max <- max(page$x)
+    
+    
+    # Bottom
     header_bottom <- 
-      min(page$y[str_detect(page$text, "\\$")])
+      min(c(page$y[str_detect(page$text, "\\$") & page$y < 250], y_max),na.rm=TRUE)
+    header_bottom <- 
+      min(setdiff(unique(page$y[page$y > header_bottom]), header_bottom))
+    
     header_top <- 
-      min(page$y[str_detect(page$text, "(?<!.)2018(?!.)")])
-    page <- 
-      page[page$y <= header_bottom & 
-             page$y > header_top]
-    a <- calc_header_area(page)
-    a
-    })) 
+      min(c(page$y[str_detect(page$text, "(?<!.)2018(?!.)") & page$space == FALSE], y_max), na.rm = TRUE)
+    
+    # Convert empty pages to null
+    if(header_bottom == y_max | header_top == y_max) { 
+      page <- data.table() 
+      } else { 
+      page <- 
+        page[page$y <= header_bottom &
+               page$y > header_top]
+      }
+    
+    # Return
+    #page 
+    
+    # Top  
+  top <- min(page$y)
+  height <- unique(page$height[page$y == top])
+  top <- top - height - 1 
+  
+  # Left
+  left <- 
+    ifelse( min(page$x) - 30 > 0,
+            min(page$x) - 30, 1 )
+  
+  # Right
+  width_max_x <- page$width[page$x == max(page$x)]
+  max_x <- max(page$x)
+  right <- max_x + width_max_x + 25
+  
+  # Bottom
+  bottom <- max(page$y) + 10
+  
+  # Area list
+  a <- c(top, left, bottom, right)
+  
+  # Return
+  a
+    
+    })) %>>% 
+  
+  # Drop null pages
+  list.map(x ~ x[!sapply(x, function(x) nrow(x) == 0)]) %>>%
+  
+  # Apply calc_table_area to each page 
+  list.map(x ~ lapply(x, function(page) {
+    calc_header_area(page)
+   }))
+
 ```
 
 
 
+```{r eval=FALSE, include=FALSE}
 
-```{r 'get-header-table'}
+header <- 
+  
+  pdf_list[unlist(lapply(pdf_list, length))>0] %>>%
+  
+  list.map(x ~ lapply(x, function(page) {
+    
+    #page <- pdf_list[[1]]$`16`
+    #page <- pdf_list[[4]]$`43`
+    
+    # Convert data.table
+    page <- setDT(page)
+    
+    # Horizontal
+    x <- 8.5 * 72
+    y <- 11 * 72
+    max_x <- max(page$x)
+    max_y <- max(page$y)
+    orientation <- 
+      ifelse(x < max_x, "horizontal", "verticle")
+    
+    # Top
+    top_y <- 
+      min(unique(page$y[str_detect(page$text, "(?<!.)2018(?!.)") & 
+                     page$space == FALSE]))
+    top_height <- unique(page$height[page$y == top_y])
+    top <- top_y + top_height
+      
+    # Left
+    left <-     
+      ifelse( min(page$x) - 30 > 0,
+              min(page$x) - 30, 1 )
+    
+    # Bottom
+    table_top <- 
+      unique(page$y[str_detect(page$text, "\\$") & page$y < 250])
+    bottom_one <- 
+      min(unique(page$y[page$y > table_top]), max_y, na.rm=TRUE)
+    bottom <- 
+      min(unique(page$y[page$y > bottom_one]), max_y, na.rm=TRUE)
+      
+    # Right
+    width_max_x <- max(page$width[page$x == max_x])
+    right <- 
+      max_x + width_max_x + ifelse(orientation == "verticle", 30, 50)
+    
+    # Area list
+    a <- c(top, left, bottom, right)
+  
+    # Return
+    a 
+  
+  })) %>>% 
+  
+  # Drop null pages
+  list.map(x ~ x[!sapply(x, function(x) any(is.infinite(x)))])
+  
+```
+
+
+try to get header out of text
+```{r eval=FALSE, include=FALSE}
+https://blog.az.sg/posts/reading-pdfs-in-r/
+
+page[, fcoalesce(text), by="y"]
+fcoalesce(page$text, sep="")[page$y == 115]
+tabulize(page)
+test <- extract_text(pdfs[3], pages=16) %>%
+  readr::read_lines()
+test <- test[1:min(which(str_detect(test, "\\$"))) -1]
+writeLines(test)
+
+result <- pdf_text(pdfs[3])[16] %>%
+  # split filecontent by newline character
+  str_split("\n") %>%
+  # convert to tibble and assign unique column names
+  as_tibble(.name_repair = make.names) 
+
+result <- pdf_text(pdfs[3])[16] %>%
+ str_split("\n") %>%
+  first() %>%
+  as_tibble()
+result <- result[1:min(which(str_detect(result$value, "\\$"))) -1,]
+```
+
+
+tabulize function for pdf_data
+```{r eval=FALSE, include=FALSE}
+#https://stackoverflow.com/questions/60127375/using-the-pdf-data-function-from-the-pdftools-package-efficiently
+tabulize <- function(pdf_df, filter = 0.01)
+{
+  pdf_df <- page
+  xd <- density(pdf_df$x, filter)
+  yd <- density(pdf_df$y, filter)
+  pdf_df$col <- as.numeric(cut(pdf_df$x, c(xd$x[xd$y > .5] - 2, max(xd$x) + 3)))
+  pdf_df$row <- as.numeric(cut(pdf_df$y, c(yd$x[yd$y > .5] - 2, max(yd$x) + 3)))
+  pdf_df %<>% group_by(row, col) %>% summarise(label = paste(text, collapse = " "))
+  res <- matrix(rep("", max(pdf_df$col) * max(pdf_df$row)), nrow = max(pdf_df$row))
+  for(i in 1:nrow(pdf_df)) res[pdf_df$row[i], pdf_df$col[i]] <- pdf_df$label[i]
+  res <- res[which(apply(r, 1, paste, collapse = "") != ""), ]
+  res <- res[,which(apply(r, 2, paste, collapse = "") != "")]
+  as.data.frame(res[-1,])
+}
+```
+
+
+Header table NOT USED
+```{r 'get-header-table', eval=FALSE, include=FALSE}
 
 header_table  <- 
   
   mapply(function(x, y) {
     
-    #a <- list(header[["amherst"]][["16"]])
-    #page <- 16
-    #city <- "amherst"
+    #x <-  header[["braintree"]][["39"]]
+    #y <- "braintree"
+    #page <- 39
+    #page <- pdf_list[["amherst"]][["16"]]
 
     # Params
     a <- x
@@ -453,36 +706,37 @@ header_table  <-
     pdf <-
       paste0(dir, city, "_2018.pdf")
     
-    # Adj max x if needed
-    #dim <- pdftools::pdf_pagesize(pdf)[page,]
-    #max_x <- ifelse(dim$right > 615, dim$height, dim$right)
-    #a[[1]][4] <- ifelse(a[[1]][4] < max_x, max_x, a[[1]][4])
-    
+    # Extract table with params and pdf with mapply
     l <- mapply(function(a, page, pdf) {
       
       # Tabulizer
-      t <- 
-        try(extract_tables(pdf, 
+      if(length(a) == 4) {
+        t <- 
+          try(extract_tables(pdf, 
                       pages = page, 
                       area = list(a), 
                       guess = F,
                       output = "data.frame"))
+      } else { t <- data.frame() }
   
       t
       
       }, a, page, pdf)
     
+    # Convert to dt and drop unneeded cols
     l <- lapply(l, function(t) {
       
       # Convert to dt
       t <- setDT(t)
       
-       # Select $ or all is.na columns and drop
-      drops <- 
-        sapply(t, function(col) which(str_detect(col, "^\\$$") | all(is.na(col))))
-      drops <- 
-        which(sapply(drops, function(col) sum(col) > 0))
-      t[ , (drops) := NULL]
+      # Select $ or all is.na columns and drop
+      if(length(t) > 0) {
+        drops <-
+          sapply(t, function(col) which(any(str_detect(col, "^\\$$")) | all(is.na(col))))
+        drops <- 
+          which(sapply(drops, function(col) sum(col) > 0))
+        t[ , (drops) := NULL] 
+        }
       
       # Return dt
       t
@@ -495,23 +749,21 @@ header_table  <-
 }, header, names(header))
 
 # Add subscript "a" to header_table municipal index names
-header_table <- sapply(header_table, function(list) {
+header_table <- 
+  sapply(header_table, function(list) {
     names(list) <- paste(names(list), "a",sep="")
     list})
 
 ```
 
 
-
-
-
-```{r 'get-spreadsheets'}
+Merger of header and table NOT USED
+```{r 'get-spreadsheets', eval=FALSE, include=FALSE}
 
 n <- mapply(c, header_table, table)
-n <- list(header_table, table)
 
 n1 <- 
-  lapply(n[1:5], function(x) {
+  lapply(n, function(x) {
     doubles <-
       names(which(table(str_remove(names(x), "a")) == 2))
   l <- 
@@ -529,15 +781,27 @@ n1 <-
 ```
 
 
+```{r}
+saveRDS(list(specs=specs,
+             table=table,
+             pdf_list=pdf_list), 
+        "mass.RDS")
+```
+
 
 
 ```{r 'save-xlsx'}
 library(xlsx)
 # Save to workbook with each list element as tab
 wb <- createWorkbook()
-abington <- n1[[1]]
-sheetnames <- names(abington)
+example <- n1[[1]][1:2]
+example <- c(example,n1[[2]][1:2])
+sheetnames <- names(example)
 sheets <- lapply(sheetnames, createSheet, wb = wb)
-void <- Map(addDataFrame, abington, sheets)
-saveWorkbook(wb, file = "sample_cafr_abington.xlsx")
+void <- Map(addDataFrame, example, sheets)
+saveWorkbook(wb, file = "sample_cafr.xlsx")
 ```
+
+
+
+
