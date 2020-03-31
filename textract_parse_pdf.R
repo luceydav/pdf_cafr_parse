@@ -121,24 +121,24 @@ cafr <- cafr[2:length(cafr)]
 final <- 
   # Apply parse_json_table.py by table to convert to csv
   mclapply(cafr, function(list_item) {
-  
-  # Save table to disc as json
-  list.save(list_item, file = "textract_obj_subset.json", type="json")
+    
+    # Save table to disc as json
+    list.save(list_item, file = "textract_obj_subset.json", type = "json")
 
-  # Call parse_json_table.py in bash from working dir
-  system("python3 parse_json_table.py 'textract_obj_subset.json' 'result.csv'")
+    # Call parse_json_table.py in bash from working dir
+    system("python3 parse_json_table.py 'textract_obj_subset.json' 'result.csv'")
   
-  # Load parsed csv as data.table
-  fs <- fread("result.csv", check.names = FALSE)
+    # Load parsed csv as data.table
+    fs <- fread("result.csv", check.names = FALSE)
   
-  # Return csv
-  return(fs)
+    # Return csv
+    return(fs)
   
   })
 
 
 # Cleanup
 s3$delete_object(Bucket = bucket_name, Key = file_name)
-s3$delete_bucket(Bucket = "textract-console-us-east-1-2c8c7508-f86e-448c-9bb1-48e9309d87e2")
+s3$delete_bucket(Bucket = bucket_name)
 #close(read_file)
 #file.remove(file_name)

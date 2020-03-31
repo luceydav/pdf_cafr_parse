@@ -12,7 +12,6 @@ library(parallel)
 
 
 # Code to download Center for Muni Finance pdfs
-
 # Get city names from Reason spreadsheet
 cities <- 
   readxl::read_excel(
@@ -289,5 +288,3 @@ cleaned <-
   
   list.map(x ~ lapply(x, clean_table))
 
-
-page <- table[[7]][2]
