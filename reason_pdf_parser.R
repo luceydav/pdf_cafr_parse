@@ -76,32 +76,35 @@ pdf_list <-
     
     rpt <- 
       rpt[unlist(lapply(rpt, function(page) {
-        # Filter pages with notes to financial statement language
+        
+        # Get table top y param for text filtering
+        if (any(str_detect(page$text, "\\$"))) {
+          table_top <- min(page$y[min(which(str_detect(page$text, "\\$")))])
+        } else { table_top <- 300 }
+        
+        # Filter pages with notes to financial statement language at bottom
         ((str_detect(
           tolower(paste(page$text[page$y %in% tail(unique(page$y), 5)], collapse = " ")), 
           "notes to basic financial statements|accompanying notes|integral part of these financial statements|notes to the financial statements are an integral part of this statement"
         ) |
-          # Filter pages with key statemnt names
+          # Filter pages with key statement names or the word "continued" at top
           str_detect(
-            tolower(paste(page$text[page$y %in% head(unique(page$y), 5)], collapse = " ")), 
-            "statement of net position|statement of activities|statement of revenues|balance sheet"
+            tolower(paste(page$text[page$y < table_top], collapse = " ")), 
+            "statement of net position|statement of activities|statement of revenues|balance sheet|continued"
           )
-        ) & 
+        ) 
+        & 
           !str_detect(
-            # Then drop pages with these phrases
-            tolower(paste(page$text, collapse = " ")), 
-            "discussion & analysis|contents|discussion and analysis|fiduciary|enterprise|proprietary|reconciliation|combining|comparative|highlights|budget|non(-)major|trust funds"
-          ))
+            # Then drop pages with these phrases above first table line
+            tolower(paste(page$text[page$y < table_top], collapse = " ")), 
+            "discussion & analysis|contents|discussion and analysis|fiduciary|enterprise|proprietary|reconciliation|combining|comparative|condensed|highlights|budget|non-major|nonmajor|trust funds|notes|analysis|findings|awards|post-employment|investments"
+          )
+        )
       }))]
     
     # Convert to dt
     rpt <- mclapply(rpt, setDT)
-    
-    # Drop tables mistakenly picked up on indices far from financial statements
-    names <- as.integer(names(rpt))
-    mean_names <- mean(names)
-    rpt <- rpt[abs(names - mean_names) < 8]
-    
+  
     # Return 
     rpt
     
@@ -112,18 +115,24 @@ names(pdf_list) <- tolower(cities)
 
 # Filter non tables
 pdf_list <- 
-  pdf_list %>>%
+  pdf_list %>>% 
+  list.map(x ~ x[unlist(mclapply(x, function(dt) {
+    lines <- dt[, paste(text, collapse = " "), y][1:10]
+    any(str_detect(tolower(lines), "june\\s\\d{2}\\,\\s2018"))
+  }))]) %>>%
   # Keep only chart pages based on digit/letter ratio > 0.2
-  list.map(x ~ x[lapply(x, function(page) {
+  list.map(x ~ x[mclapply(x, function(page) {
     text <- paste(page$text, collapse = " ")
     d <- str_count(text, "\\d")
     w <- str_count(text, "[[:alpha:]]")
     d / w
-    }) > 0.15]) %>>% 
-  list.map(x ~ x[unlist(lapply(x, function(dt) {
-    lines <- dt[, paste(text, collapse = " "), y][1:10]
-    any(str_detect(tolower(lines), "june\\s\\d{2}\\,\\s2018"))
-  }))])
+    }) > 0.20])
+
+pdf_list <- mclapply(pdf_list, function(muni){
+  names <- as.integer(names(muni))
+  mean_names <- mean(names)
+  muni[abs(names - mean_names) < 10]
+})
 
 # Drop empty (zero length) lists
 pdf_list <- 
@@ -135,8 +144,6 @@ specs <-
   pdf_list %>>%
   
   list.map(x ~ mclapply(x, function(page) {
-    
-    # page <- pdf_list[[57]][[3]]
     
     # Convert to dt
     page <- setDT(page)
@@ -194,11 +201,11 @@ table  <-
   
   mapply(function(x, y) {
     
-    #a <- specs[["hopkinton"]][["14"]]
+    #a <- specs[["winchester"]][["14"]]
     #page <- 14
     #city <- gsub(" ", "_", y)
-    # city <- "hopkinton"
-    #pdf <- pdfs[61]
+    # city <- "winchester"
+    #pdf <- pdfs[146]
     
     # Params from mapply
     a <- x
@@ -256,125 +263,5 @@ table  <-
   }, specs, names(specs))
 
 
-# Clean raw character output after tabula
-# Remove punctuation, convert to numeric
-# Clean aand set names
-clean_table <- function(page) {
-  
-  #page <- table[[21]][[1]]
-  
-  # Get names function to clean up names
-  get_names <- function(page) {
-    
-    # Extract incomplete column names resulting from faulty tabula 
-    names <- t(colnames(page))
-    names <- 
-      str_replace(tolower(names),"town.*|x\\.\\d|statement.*", "")
-    names[1] <- ""
-    names <- matrix(names, nrow=1)
-    
-    # Bottom of header
-    flags <- c("\\$", "assets", "liabilities", "revenues", "activities")
-    patterns <- paste(flags, collapse="|")
-    if (any(str_detect( tolower(as.vector(t(page[1:10,]))), patterns))) {
-      top_bottom <-
-        min(which(apply(page, 1, function(row) any(str_detect(row, "\\$|\\,\\d{3}"))))) -1
-    }
-    if(top_bottom > 1) { 
-      page <- page[1:top_bottom]
-      }
-    
-    # Clean up above header
-    if(any(apply(page[1:nrow(page)], 1, function(row) any(str_detect(row, "2018"))))) {
-    #if (any(str_detect( tolower(as.vector(t(page[1:15,]))), patterns))) {
-      header_top <- 
-        min(which(apply(page, function(row) any(str_detect(row, "2018")), MARGIN=1))) +1
-        page <- page[header_top:nrow(page)] 
-    }
-    
-    # Drop empty rows
-    any_empty <- 
-      which(apply(page[,-1], 1, function(row) all(!str_detect(row, ""))))
-    if(length(any_empty) > 0 ) {
-      page <- page[-any_empty]
-    }
-  
-    # Convert to matrix of first few rows and rbind with names
-    page <- as.matrix(page)
-    if (any(str_detect(names, "\\w"))) {
-      page <-
-        rbind(names, page)
-    }
-    
-    # Build new names by pasting together rows by column
-    if(ncol(page) > 2) { 
-      page <- page[,-1] 
-      names <- 
-        lapply(1:ncol(page), function(col) {
-          v <- t(page[,col])
-          return(v)
-          })
-      names <- 
-        sapply(names, function(name){
-          paste(name, collapse=" ")
-        })
-    } else { names <- paste(page[, -1], collapse = " ") }
-    
-    return(names)
-  }
-  
-  #Run get names function to convert dt rows to vector
-  names <- c("element", get_names(page))
-  if (length(names) == ncol(page)) { 
-    names(page) <- names 
-  } else {
-    #cat(“Caught an error during fread, trying to set names\n”)
-    names(page) <- c("element", rep("error", ncol(page)-1))
-  }
-  
-  # Clean names to snake case
-  page <- janitor::clean_names(page)
-  
-  # Drop empty rows
-  page <- page[element != ""]
-  
-  # Clean and convert to numeric
-  if(ncol(page) > 2) {
-    num <- names(page)[2:ncol(page)]
-    page[, (num) := lapply(.SD, function(col) {
-      col[1] <- str_remove(col[1], "\\w*")
-      col <- str_replace(col, "-", NA_character_)
-      col <- str_remove(col, " ")
-      col <- readr::parse_number(col, c("NA"))
-      #col <- nafill(col, fill = 0L)
-      col
-    }), .SDcols=num]
-  } else { 
-      num <- names(page)[2:ncol(page)]
-      page[, (num) := lapply(.SD, readr::parse_number), .SDcol=num]
-  }
-  
-  # Clean punctuation from rownames
-  page[, element := str_remove(element, "\\W[\\s\\.\\$]*$")]
-  
-  # Return
-  return(page)
-}
-
-# Run clean_table on tables of first five munis
-cleaned <- 
-  
-  table %>>%
-  
-  list.map(x ~ lapply(x, try(clean_table)))
-
-test <- table[[21]][[1]]
 
 
-a <- specs[[13]][[2]]
-pdf<- pdfs[13]
-test <- extract_tables(pdf, 
-                         pages = 10, 
-                         area = list(a), 
-                         guess = F,
-                         output = "data.frame")
