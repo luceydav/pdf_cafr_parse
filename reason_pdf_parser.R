@@ -263,5 +263,8 @@ table  <-
   }, specs, names(specs))
 
 
-
+saveRDS(list(specs=specs,
+             table=table,
+             pdf_list=pdf_list), 
+        "mass.RDS")
 
