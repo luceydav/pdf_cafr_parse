@@ -117,6 +117,8 @@ cleaned <-
   table %>>%
   list.map(x ~ lapply(x, try(clean_table)))
 
+
+
 # Check for most commonly used line-items
 elements <- 
           lapply(cleaned, function(muni) {

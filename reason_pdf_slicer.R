@@ -22,11 +22,12 @@ cities <- str_remove(files, "_2018.pdf")
 pdfs <- paste0(dir, cities, "_2018.pdf")
 
 # Dir to put pdf subset in
-path <- "/Users/davidlucey/Desktop/David/Projects/pdf_cafr_parse/"
+path <- 
+  "/Users/davidlucey/Desktop/David/Projects/pdf_cafr_parse/"
 
 # Set up joined.pdf so doesn't fail when merged in mapply loop
 pdf_subset(
-  pdfs[1], 
+  pdfs, 
   pages = 3, 
   output = paste0(path, "joined.pdf")
   )

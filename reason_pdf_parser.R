@@ -3,7 +3,7 @@
 # Libraries
 library(pdftools)
 library(tabulizer)
-library(stringr)
+library(re2r)
 library(data.table)
 library(rlist)
 library(pipeR)
@@ -25,30 +25,16 @@ cities <- cities$Entity[2:150]
 # Prepare cities for url paste
 cities_url <- 
   ifelse(
-    str_detect(cities, "\\w\\s\\w"),
-    paste0(str_extract(cities, "^\\w+"),
+    re2_detect(cities, "\\w\\s\\w"),
+    paste0(re2_extract(cities, "^\\w+"),
            "%20",
-           str_extract(cities, "\\w+$")),
+           re2_extract(cities, "\\w+$")),
     cities)
-
-# Apply download.file to url to download specified pdfs, rename and save in data/pdf_cafr folder
-year <- "2018"
-lapply(cities_url, function(city) {
-  try(download.file(
-    paste0("https://cafr.file.core.windows.net/cafr/General%20Purpose/2018/MA%20",city,"%202018.pdf?sv=2017-07-29&ss=f&srt=sco&sp=r&se=2120-03-06T21:34:56Z&st=2020-03-06T21:34:56Z&spr=https&sig=lFqyP8wwH1giyaFhjj6lCVuaAZ9xgbSnjEtzEtpusgA%3D",collapse=""),
-    destfile = 
-      paste0(
-        "data/pdf_cafr/",
-        tolower(str_replace(city, "\\%20", "_")),
-        "_", year,
-        ".pdf"),
-    mode = "wb"))})
-
 
 # Create list of all pdfs in data/pdf_cafr
 dir <- "/Users/davidlucey/Desktop/David/Projects/mass_munis/data/pdf_cafr/"
 files <- list.files(dir)
-city <- str_remove(files, "_2018.pdf")
+city <- re2_replace(files, "_2018.pdf","")
 pdfs <- 
   paste0(dir, city, "_2018.pdf")
 
@@ -78,33 +64,32 @@ pdf_list <-
       rpt[unlist(lapply(rpt, function(page) {
         
         # Get table top y param for text filtering
-        if (any(str_detect(page$text, "\\$"))) {
-          table_top <- min(page$y[min(which(str_detect(page$text, "\\$")))])
+        if (any(re2_detect(page$text, "\\$"), parallel = TRUE)) {
+          table_top <- min(page$y[min(which(re2_detect(page$text, "\\$")))])
         } else { table_top <- 300 }
         
         # Filter pages with notes to financial statement language at bottom
-        ((str_detect(
+        ((re2_detect(
           tolower(paste(page$text[page$y %in% tail(unique(page$y), 5)], collapse = " ")), 
-          "notes to basic financial statements|accompanying notes|integral part of these financial statements|notes to the financial statements are an integral part of this statement"
-        ) |
-          # Filter pages with key statement names or the word "continued" at top
-          str_detect(
-            tolower(paste(page$text[page$y < table_top], collapse = " ")), 
-            "statement of net position|statement of activities|statement of revenues|balance sheet|continued"
+          "notes to basic financial statements|accompanying notes|integral part of these financial statements|notes to the financial statements are an integral part of this statement",
+          parallel=TRUE
+        ) | 
+          re2_detect(
+            tolower(paste(page$text[page$y %in% head(unique(page$y), 5)], collapse = " ")), 
+            "statement of net position|statement of activities|statement of revenues|balance sheet",
+            parallel = TRUE
           )
-        ) 
-        & 
-          !str_detect(
-            # Then drop pages with these phrases above first table line
-            tolower(paste(page$text[page$y < table_top], collapse = " ")), 
-            "discussion & analysis|contents|discussion and analysis|fiduciary|enterprise|proprietary|reconciliation|combining|comparative|condensed|highlights|budget|non-major|nonmajor|trust funds|notes|analysis|findings|awards|post-employment|investments"
-          )
-        )
+        ) &
+            !re2_detect(
+              # Then drop pages with these phrases
+              tolower(paste(page$text, collapse = " ")), 
+              "discussion & analysis|contents|discussion and analysis|fiduciary|enterprise|proprietary|reconciliation|combining|comparative|highlights|budget|non(-)major|trust funds",
+              parallel = TRUE
+            ))
       }))]
-    
     # Convert to dt
     rpt <- mclapply(rpt, setDT)
-  
+    
     # Return 
     rpt
     
@@ -118,13 +103,13 @@ pdf_list <-
   pdf_list %>>% 
   list.map(x ~ x[unlist(mclapply(x, function(dt) {
     lines <- dt[, paste(text, collapse = " "), y][1:10]
-    any(str_detect(tolower(lines), "june\\s\\d{2}\\,\\s2018"))
+    any(re2_detect(tolower(lines), "june\\s\\d{2}\\,\\s201\\d", parallel = TRUE))
   }))]) %>>%
   # Keep only chart pages based on digit/letter ratio > 0.2
   list.map(x ~ x[mclapply(x, function(page) {
     text <- paste(page$text, collapse = " ")
-    d <- str_count(text, "\\d")
-    w <- str_count(text, "[[:alpha:]]")
+    d <- re2_count(text, "\\d", parallel = TRUE)
+    w <- re2_count(text, "[[:alpha:]]", parallel = TRUE)
     d / w
     }) > 0.20])
 
@@ -144,7 +129,7 @@ specs <-
   pdf_list %>>%
   
   list.map(x ~ mclapply(x, function(page) {
-    
+    #page <- pdf_list[["boston"]][["36"]]
     # Convert to dt
     page <- setDT(page)
     
@@ -157,7 +142,7 @@ specs <-
       ifelse(x < max_x, "horizontal", "verticle")
     
     # Top
-    year_lines <- page$y[str_detect(page$text, "201\\d") & page$space==FALSE]
+    year_lines <- page$y[re2_detect(page$text, "201\\d") & page$space==FALSE]
     year_lines <- year_lines[year_lines < 200]
     table_top <- max(year_lines)
     height_top <- unique(page$height[page$y == table_top])
@@ -165,9 +150,11 @@ specs <-
     
     # Bottom
     table_bottom <-
-      max(page$y[str_detect(page$text, "\\$")])
-    height_bottom <- unique(page$height[page$y == table_bottom])
-    bottom <- max(table_bottom + height_bottom)
+      max(page$y[re2_detect(tolower(page$text), "\\$|total")])
+    if( table_bottom != max(page$y) ) {
+      next_y <- min(page$y[page$y > table_bottom])
+      bottom <- max(next_y - 3, table_bottom) }
+    else { bottom <- table_bottom }
     
     # Convert empty pages to null
     if(table_top == max_y | table_bottom == max_x) { page <- NULL }
@@ -246,7 +233,7 @@ table  <-
       # Select $ or all is.na columns and drop
       if(length(t) > 0) {
         drops <-
-          sapply(t, function(col) which(any(str_detect(col, "^\\$$")) | all(is.na(col))))
+          sapply(t, function(col) which(any(re2_detect(col, "^\\$$", parallel = TRUE)) | all(is.na(col))))
         drops <- 
           which(sapply(drops, function(col) sum(col) > 0))
         t[ , (drops) := NULL] 
